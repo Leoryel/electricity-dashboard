@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
-import math
 import os
 import re
 from zoneinfo import ZoneInfo
@@ -522,31 +521,48 @@ def build_negative_hours_evolution(prices: pd.DataFrame) -> pd.DataFrame:
     return daily_negative_hours
 
 
-def format_bin_number(value: float) -> str:
-    if float(value).is_integer():
-        return str(int(value))
-
-    return f"{value:g}"
-
-
 def build_price_category_distribution(prices: pd.DataFrame) -> pd.DataFrame:
     if prices.empty:
         return pd.DataFrame(
             columns=["price_category", "hours", "percentage_of_period"]
         )
 
-    bin_size = 10
-    min_price = prices["price_eur_mwh"].min()
-    max_price = prices["price_eur_mwh"].max()
-    lower_edge = math.floor(min_price / bin_size) * bin_size
-    upper_edge = (math.floor(max_price / bin_size) + 1) * bin_size
-    if lower_edge == upper_edge:
-        upper_edge += bin_size
-
-    edges = list(range(int(lower_edge), int(upper_edge) + bin_size, bin_size))
+    edges = [
+        float("-inf"),
+        -500,
+        -200,
+        -100,
+        -80,
+        -60,
+        -40,
+        -20,
+        0,
+        20,
+        40,
+        60,
+        80,
+        100,
+        200,
+        500,
+        float("inf"),
+    ]
     labels = [
-        f"{format_bin_number(edges[index])}-{format_bin_number(edges[index + 1])} EUR/MWh"
-        for index in range(len(edges) - 1)
+        "Below -500 EUR/MWh",
+        "-500 to -200 EUR/MWh",
+        "-200 to -100 EUR/MWh",
+        "-100 to -80 EUR/MWh",
+        "-80 to -60 EUR/MWh",
+        "-60 to -40 EUR/MWh",
+        "-40 to -20 EUR/MWh",
+        "-20 to 0 EUR/MWh",
+        "0 to 20 EUR/MWh",
+        "20 to 40 EUR/MWh",
+        "40 to 60 EUR/MWh",
+        "60 to 80 EUR/MWh",
+        "80 to 100 EUR/MWh",
+        "100 to 200 EUR/MWh",
+        "200 to 500 EUR/MWh",
+        "500 EUR/MWh and above",
     ]
     categories = pd.cut(
         prices["price_eur_mwh"],
