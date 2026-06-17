@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
+import os
 import re
 from zoneinfo import ZoneInfo
 import xml.etree.ElementTree as ET
@@ -164,6 +165,15 @@ def format_percentage_metric(value: float) -> str:
         return "n/a"
 
     return f"{value:+.2f}%"
+
+
+def get_saved_entsoe_token() -> str:
+    try:
+        saved_token = st.secrets.get("ENTSOE_API_TOKEN", "")
+    except Exception:
+        saved_token = ""
+
+    return str(saved_token or os.getenv("ENTSOE_API_TOKEN", "")).strip()
 
 
 def prepare_consumption_data(raw_data: pd.DataFrame) -> PreparedConsumptionData:
@@ -661,15 +671,20 @@ def render_day_ahead_price_dashboard() -> None:
         "End date",
         value=default_end_date,
     )
-    security_token = col_c.text_input(
+    saved_security_token = get_saved_entsoe_token()
+    manual_security_token = col_c.text_input(
         "ENTSO-E API security token",
         type="password",
-        help="Free token from your ENTSO-E Transparency Platform account.",
+        help="Leave empty to use the saved local token.",
     )
+    security_token = manual_security_token.strip() or saved_security_token
 
     if not security_token:
         st.info("Enter an ENTSO-E API token to retrieve Belgian day-ahead prices.")
         return
+
+    if saved_security_token and not manual_security_token:
+        st.caption("Using saved local ENTSO-E API token.")
 
     if start_date > end_date:
         st.error("The start date must be before or equal to the end date.")
