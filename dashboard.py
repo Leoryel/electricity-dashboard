@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
+import math
 import os
 import re
 from zoneinfo import ZoneInfo
@@ -467,25 +468,129 @@ def calculate_profile_weighted_price_metrics(profile: pd.DataFrame) -> tuple[flo
 
 
 def build_daily_spreads(prices: pd.DataFrame) -> pd.DataFrame:
-    def four_hour_spread(day_prices: pd.Series) -> float | None:
+    def ranked_position_spread(day_prices: pd.Series, rank: int) -> float | None:
         clean_prices = day_prices.dropna().sort_values()
-        if len(clean_prices) < 32:
+        if len(clean_prices) < rank * 2:
             return None
 
-        sixteenth_lowest = clean_prices.iloc[15]
-        sixteenth_highest = clean_prices.iloc[-16]
-        return float(sixteenth_highest - sixteenth_lowest)
+        ranked_lowest = clean_prices.iloc[rank - 1]
+        ranked_highest = clean_prices.iloc[-rank]
+        return float(ranked_highest - ranked_lowest)
+
+    def ranked_average_spread(day_prices: pd.Series, quarter_hours: int) -> float | None:
+        clean_prices = day_prices.dropna().sort_values()
+        if len(clean_prices) < quarter_hours * 2:
+            return None
+
+        lowest_average = clean_prices.head(quarter_hours).mean()
+        highest_average = clean_prices.tail(quarter_hours).mean()
+        return float(highest_average - lowest_average)
 
     return (
         prices.groupby("delivery_date", as_index=False)
         .agg(
             max_price=("price_eur_mwh", "max"),
             min_price=("price_eur_mwh", "min"),
-            four_hour_spread_eur_mwh=("price_eur_mwh", four_hour_spread),
+            four_hour_spread_eur_mwh=(
+                "price_eur_mwh",
+                lambda values: ranked_position_spread(values, 16),
+            ),
+            two_hour_spread_eur_mwh=(
+                "price_eur_mwh",
+                lambda values: ranked_average_spread(values, 8),
+            ),
+            one_hour_spread_eur_mwh=(
+                "price_eur_mwh",
+                lambda values: ranked_average_spread(values, 4),
+            ),
             intervals=("price_eur_mwh", "size"),
         )
         .assign(max_spread_eur_mwh=lambda data: data["max_price"] - data["min_price"])
     )
+
+
+def build_negative_hours_evolution(prices: pd.DataFrame) -> pd.DataFrame:
+    daily_negative_hours = (
+        prices.assign(is_negative=prices["price_eur_mwh"] < 0)
+        .groupby("delivery_date", as_index=False)
+        .agg(negative_intervals=("is_negative", "sum"))
+    )
+    daily_negative_hours["negative_hours"] = daily_negative_hours["negative_intervals"] / 4
+    daily_negative_hours["cumulative_negative_hours"] = daily_negative_hours[
+        "negative_hours"
+    ].cumsum()
+    return daily_negative_hours
+
+
+def format_bin_number(value: float) -> str:
+    if float(value).is_integer():
+        return str(int(value))
+
+    return f"{value:g}"
+
+
+def build_price_category_distribution(prices: pd.DataFrame) -> pd.DataFrame:
+    if prices.empty:
+        return pd.DataFrame(
+            columns=["price_category", "hours", "percentage_of_period"]
+        )
+
+    bin_size = 10
+    min_price = prices["price_eur_mwh"].min()
+    max_price = prices["price_eur_mwh"].max()
+    lower_edge = math.floor(min_price / bin_size) * bin_size
+    upper_edge = (math.floor(max_price / bin_size) + 1) * bin_size
+    if lower_edge == upper_edge:
+        upper_edge += bin_size
+
+    edges = list(range(int(lower_edge), int(upper_edge) + bin_size, bin_size))
+    labels = [
+        f"{format_bin_number(edges[index])}-{format_bin_number(edges[index + 1])} EUR/MWh"
+        for index in range(len(edges) - 1)
+    ]
+    categories = pd.cut(
+        prices["price_eur_mwh"],
+        bins=edges,
+        labels=labels,
+        right=False,
+        include_lowest=True,
+    )
+    interval_counts = categories.value_counts(sort=False)
+    total_hours = len(prices) / 4
+
+    distribution = pd.DataFrame(
+        {
+            "price_category": interval_counts.index.astype(str),
+            "hours": interval_counts.values / 4,
+        }
+    )
+    distribution["percentage_of_period"] = (
+        distribution["hours"] / total_hours * 100 if total_hours else 0
+    )
+    return distribution
+
+
+def render_negative_hours_chart(negative_hours: pd.DataFrame) -> None:
+    fig = px.line(
+        negative_hours,
+        x="delivery_date",
+        y="cumulative_negative_hours",
+        markers=True,
+        labels={
+            "delivery_date": "Date",
+            "cumulative_negative_hours": "Cumulative negative hours",
+        },
+        title="Cumulative Negative Price Hours",
+    )
+    fig.update_traces(
+        hovertemplate="%{x|%d/%m/%Y}<br>%{y:.2f} cumulative hours<extra></extra>"
+    )
+    fig.update_layout(
+        height=420,
+        margin=dict(l=20, r=20, t=70, b=20),
+        yaxis=dict(rangemode="tozero"),
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def render_price_missing_interval_warnings(profile: pd.DataFrame) -> None:
@@ -719,6 +824,10 @@ def render_day_ahead_price_dashboard() -> None:
 
     average_max_spread = daily_spreads["max_spread_eur_mwh"].mean()
     average_four_hour_spread = daily_spreads["four_hour_spread_eur_mwh"].mean()
+    average_two_hour_spread = daily_spreads["two_hour_spread_eur_mwh"].mean()
+    average_one_hour_spread = daily_spreads["one_hour_spread_eur_mwh"].mean()
+    negative_hours = build_negative_hours_evolution(prices)
+    price_distribution = build_price_category_distribution(prices)
 
     col_a, col_b, col_c, col_d = st.columns(4)
     col_a.metric("Days", f"{period_days:,}")
@@ -729,10 +838,12 @@ def render_day_ahead_price_dashboard() -> None:
         f"{prices['price_eur_mwh'].min():.2f} / {prices['price_eur_mwh'].max():.2f}",
     )
 
-    col_a, col_b, col_c = st.columns(3)
+    col_a, col_b, col_c, col_d, col_e = st.columns(5)
     col_a.metric("Average max spread", format_price_metric(average_max_spread))
     col_b.metric("Average 4h spread", format_price_metric(average_four_hour_spread))
-    col_c.metric("Profile intervals", f"{profile['average_price_eur_mwh'].notna().sum():,}")
+    col_c.metric("Average 2h spread", format_price_metric(average_two_hour_spread))
+    col_d.metric("Average 1h spread", format_price_metric(average_one_hour_spread))
+    col_e.metric("Profile intervals", f"{profile['average_price_eur_mwh'].notna().sum():,}")
 
     if price_data.raw_resolution != "PT15M":
         st.warning(
@@ -741,6 +852,20 @@ def render_day_ahead_price_dashboard() -> None:
         )
 
     render_price_profile_chart(profile, start_date, end_date, view_label)
+    render_negative_hours_chart(negative_hours)
+
+    st.subheader("Spot Price Distribution")
+    distribution_table = price_distribution.copy()
+    distribution_table["hours"] = distribution_table["hours"].round(2)
+    distribution_table["percentage_of_period"] = distribution_table[
+        "percentage_of_period"
+    ].round(2)
+    distribution_table.columns = [
+        "Price category",
+        "Hours",
+        "% of selected period",
+    ]
+    st.dataframe(distribution_table, use_container_width=True, hide_index=True)
 
     with st.expander("Average spot price profile data"):
         table = profile[
@@ -755,6 +880,8 @@ def render_day_ahead_price_dashboard() -> None:
                 "delivery_date",
                 "max_spread_eur_mwh",
                 "four_hour_spread_eur_mwh",
+                "two_hour_spread_eur_mwh",
+                "one_hour_spread_eur_mwh",
                 "max_price",
                 "min_price",
                 "intervals",
@@ -762,6 +889,8 @@ def render_day_ahead_price_dashboard() -> None:
         ].copy()
         table["max_spread_eur_mwh"] = table["max_spread_eur_mwh"].round(2)
         table["four_hour_spread_eur_mwh"] = table["four_hour_spread_eur_mwh"].round(2)
+        table["two_hour_spread_eur_mwh"] = table["two_hour_spread_eur_mwh"].round(2)
+        table["one_hour_spread_eur_mwh"] = table["one_hour_spread_eur_mwh"].round(2)
         table["max_price"] = table["max_price"].round(2)
         table["min_price"] = table["min_price"].round(2)
         st.dataframe(table, use_container_width=True, hide_index=True)
