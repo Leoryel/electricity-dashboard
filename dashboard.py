@@ -843,9 +843,10 @@ def render_day_ahead_price_dashboard() -> None:
     average_two_hour_spread = daily_spreads["two_hour_spread_eur_mwh"].mean()
     average_one_hour_spread = daily_spreads["one_hour_spread_eur_mwh"].mean()
     negative_hours = build_negative_hours_evolution(prices)
+    negative_interval_percentage = (prices["price_eur_mwh"] < 0).mean() * 100
     price_distribution = build_price_category_distribution(prices)
 
-    col_a, col_b, col_c, col_d = st.columns(4)
+    col_a, col_b, col_c, col_d, col_e = st.columns(5)
     col_a.metric("Days", f"{period_days:,}")
     col_b.metric("Raw intervals", f"{len(prices):,}")
     col_c.metric("Average", format_price_metric(prices["price_eur_mwh"].mean()))
@@ -853,6 +854,7 @@ def render_day_ahead_price_dashboard() -> None:
         "Min / Max",
         f"{prices['price_eur_mwh'].min():.2f} / {prices['price_eur_mwh'].max():.2f}",
     )
+    col_e.metric("Negative hours", f"{negative_interval_percentage:.2f}%")
 
     col_a, col_b, col_c, col_d, col_e = st.columns(5)
     col_a.metric("Average max spread", format_price_metric(average_max_spread))
